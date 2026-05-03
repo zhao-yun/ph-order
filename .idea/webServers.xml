@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="fb893000-edc9-41ad-ac7c-5dd0a581d283" name="腾讯云">
+        <fileTransfer rootFolder="/root/go/src/demo" accessType="SFTP" host="49.235.114.122" port="22" sshConfigId="688a15ff-d3ed-411e-911b-7a76215c094c" sshConfig="root@49.235.114.122:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

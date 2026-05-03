@@ -1,0 +1,5 @@
+host: rm-bp1acok94fvb6jmxzio.mysql.rds.aliyuncs.com
+port: 3306
+username: root
+password: Zxy20010202
+dbName: ph_orders

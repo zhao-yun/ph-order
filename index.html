@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket 测试</title>
+</head>
+<body>
+<h1>WebSocket 消息</h1>
+<form id="form" action="">
+    <input id="input" autocomplete="off" />
+    <button>发送</button>
+</form>
+<ul id="messages"></ul>
+
+<script>
+    // 连接 WebSocket 服务器（注意协议：ws 对应 http，wss 对应 https）
+    const ws = new WebSocket('ws://localhost:8080/ws');
+
+    // 接收服务器消息
+    ws.onmessage = function(event) {
+        const messages = document.getElementById('messages');
+        const li = document.createElement('li');
+        li.textContent = event.data;
+        messages.appendChild(li);
+    };
+
+    // 处理表单提交（发送消息）
+    document.getElementById('form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const input = document.getElementById('input');
+        if (input.value) {
+            // 向服务器发送消息
+            ws.send(input.value);
+            input.value = '';
+        }
+    });
+
+    // 连接关闭时提示
+    ws.onclose = function() {
+        alert('WebSocket 连接已关闭');
+    };
+
+    // 连接错误时提示
+    ws.onerror = function(error) {
+        console.error('WebSocket 错误:', error);
+    };
+</script>
+</body>
+</html>
