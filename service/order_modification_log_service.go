@@ -2,10 +2,12 @@ package service
 
 import (
 	"errors"
+	"math"
 	"net/http"
 
 	"demo/dal"
 	"demo/model"
+	"demo/util/auth"
 	"demo/util/json"
 	"demo/util/open_api"
 
@@ -33,19 +35,31 @@ func UserUpdateOrder(c *gin.Context) {
 		return
 	}
 
-	//ownerId, err := auth.GetUserID(c)
-	//if err != nil {
-	//	logrus.Errorf("auth failed, err: %v", err)
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+	ownerID, err := auth.GetUserID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 
-	// 订单是否是该用户的
-	//if order.OwnerID != ownerId {
-	//	logrus.Errorf(" No permission for this order %v", err)
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+	if order.OwnerID != ownerID {
+		logrus.Errorf("no permission for this order")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order")
+		return
+	}
+
+	newSubTotal := 0.0
+	if len(param.PetList) > 0 {
+		for _, p := range param.PetList {
+			if p != nil {
+				newSubTotal += p.PetPrice
+			}
+		}
+	} else {
+		newSubTotal = order.SubTotalPrice
+	}
+
+	newTotalPrice := newSubTotal + order.ServiceFee + order.Taxes
 
 	log := &model.OrderModificationLog{
 		OrderID:         param.OrderID,
@@ -55,6 +69,8 @@ func UserUpdateOrder(c *gin.Context) {
 		NewDate:         param.ToDate,
 		PreviousPetList: json.ToJSON(order.PetList),
 		NewPetList:      json.ToJSON(param.PetList),
+		PreviousPrice:   order.TotalPrice,
+		NewPrice:        newTotalPrice,
 		State:           model.OrderModificationInitialized,
 		Type:            model.OrderModificationTypeUser,
 	}
@@ -67,25 +83,39 @@ func UserUpdateOrder(c *gin.Context) {
 		return
 	}
 
-	// 如果订单价格变多
-	newPrice := 100.00
-	if newPrice > 0.0 {
-		param := &stripe.PaymentIntentParams{
-			Amount:        stripe.Int64(int64(newPrice * 100)), // $10.00
+	priceDelta := newTotalPrice - order.TotalPrice
+	if priceDelta > 0.0 {
+		paymentParam := &stripe.PaymentIntentParams{
+			Amount:        stripe.Int64(int64(math.Round(priceDelta * 100))),
 			Currency:      stripe.String("usd"),
-			CaptureMethod: stripe.String("manual"), // 关键：延迟扣款
-			// 可以添加其他参数如 customer, metadata 等
+			CaptureMethod: stripe.String("manual"),
 		}
-		res, err := HandleCreateCheckoutSession(c, param)
+		res, err := HandleCreateCheckoutSession(c, paymentParam)
 		if err != nil {
 			open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
 			return
 		}
-		open_api.OpenApiSuccessResponse(c, res)
+
+		open_api.OpenApiSuccessResponse(c, map[string]interface{}{
+			"log": createdLog,
+			"priceChanges": map[string]interface{}{
+				"previousPrice": order.TotalPrice,
+				"newPrice":      newTotalPrice,
+				"difference":    priceDelta,
+			},
+			"payment": res,
+		})
 		return
 	}
 
-	open_api.OpenApiSuccessResponse(c, createdLog)
+	open_api.OpenApiSuccessResponse(c, map[string]interface{}{
+		"log": createdLog,
+		"priceChanges": map[string]interface{}{
+			"previousPrice": order.TotalPrice,
+			"newPrice":      newTotalPrice,
+			"difference":    priceDelta,
+		},
+	})
 }
 
 func SitterUpdateOrder(c *gin.Context) {
@@ -103,18 +133,18 @@ func SitterUpdateOrder(c *gin.Context) {
 		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	//sitterId, err := auth.GetSitterID(c)
-	//if err != nil {
-	//	logrus.Errorf("auth failed, err: %v", err)
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
-	// 订单是否是该用户的
-	//if order.SitterID != sitterId {
-	//	logrus.Errorf(" No permission for this order %v", err)
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+
+	sitterID, err := auth.GetSitterID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if order.SitterID != sitterID {
+		logrus.Errorf("no permission for this order")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order")
+		return
+	}
 
 	newSubTotal := 0.0
 	if len(param.PetList) > 0 {
@@ -181,16 +211,27 @@ func SitterConfirmModification(c *gin.Context) {
 	if log == nil {
 		logrus.Errorf("No order modification log found for order ID %d", param.OrderID)
 		err := errors.New("no order modification log found")
+		open_api.OpenApiErrorResponse(c, http.StatusNotFound, err.Error())
+		return
+	}
+
+	sitterID, err := auth.GetSitterID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
 		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	//// 判断是否是用户发起的修改记录
-	//if log.Type != model.OrderModificationTypeUser {
-	//	logrus.Errorf("No permission for this order modification log")
-	//	err := errors.New("no permission for this order modification log")
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+	if log.SitterID != sitterID {
+		logrus.Errorf("no permission for this order")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order")
+		return
+	}
+	if log.Type != model.OrderModificationTypeUser {
+		logrus.Errorf("no permission for this order modification log")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order modification log")
+		return
+	}
+
 	// 修改订单
 	log.State = param.State
 	err = dal.UpdateOrderModificationLog(log)
@@ -225,16 +266,27 @@ func UserConfirmModification(c *gin.Context) {
 	if log == nil {
 		logrus.Errorf("No order modification log found for order ID %d", param.OrderID)
 		err := errors.New("no order modification log found")
+		open_api.OpenApiErrorResponse(c, http.StatusNotFound, err.Error())
+		return
+	}
+
+	ownerID, err := auth.GetUserID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
 		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 判断是否是用户发起的修改记录
-	//if log.Type != model.OrderModificationTypeUser {
-	//	logrus.Errorf("No permission for this order modification log")
-	//	err := errors.New("no permission for this order modification log")
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+	if log.OwnerID != ownerID {
+		logrus.Errorf("no permission for this order")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order")
+		return
+	}
+	if log.Type != model.OrderModificationTypeSitter {
+		logrus.Errorf("no permission for this order modification log")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order modification log")
+		return
+	}
+
 	// 修改订单
 	log.State = param.State
 	err = dal.UpdateOrderModificationLog(log)

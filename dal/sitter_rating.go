@@ -21,10 +21,11 @@ func GetSitterRatingPage(c *gin.Context, current int, size int, params model.Sit
 	if params.OrderID != 0 {
 		query = query.Where("order_id = ?", params.OrderID)
 	}
-	if params.UserID != "" {
+	if params.UserID != "" && params.SitterID != "" {
+		query = query.Where(db.Where("user_id = ?", params.UserID).Or("sitter_id = ?", params.SitterID))
+	} else if params.UserID != "" {
 		query = query.Where("user_id = ?", params.UserID)
-	}
-	if params.SitterID != "" {
+	} else if params.SitterID != "" {
 		query = query.Where("sitter_id = ?", params.SitterID)
 	}
 
@@ -91,6 +92,9 @@ func UpdateSitterRating(rating *model.SitterRating) error {
 
 	// 使用 map 避免更新零值字段
 	updateData := make(map[string]interface{})
+	if rating.Score != 0 {
+		updateData["score"] = rating.Score
+	}
 	if rating.Punctuality != nil {
 		updateData["punctuality"] = rating.Punctuality
 	}
@@ -133,7 +137,15 @@ func DeleteSitterRating(id int) error {
 		return tx.Error
 	}
 
-	result := tx.Where("id = ?", id).Delete(&model.SitterRating{})
+	var rating model.SitterRating
+	result := tx.Where("id = ?", id).First(&rating)
+	if result.Error != nil {
+		tx.Rollback()
+		logrus.Errorf("get sitter rating failed before delete, err: %v", result.Error)
+		return result.Error
+	}
+
+	result = tx.Where("id = ?", id).Delete(&model.SitterRating{})
 	if result.Error != nil {
 		tx.Rollback()
 		logrus.Errorf("delete sitter rating failed, err: %v", result.Error)
@@ -143,6 +155,12 @@ func DeleteSitterRating(id int) error {
 	if result.RowsAffected == 0 {
 		tx.Rollback()
 		return nil // 可以选择返回 ErrRecordNotFound
+	}
+
+	if err := tx.Model(&model.Order{}).Where("id = ?", rating.OrderID).Update("sitter_rating_state", 0).Error; err != nil {
+		tx.Rollback()
+		logrus.Errorf("reset sitter rating state failed, err: %v", err)
+		return err
 	}
 
 	if err := tx.Commit().Error; err != nil {

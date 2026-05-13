@@ -134,8 +134,16 @@ func DeleteOwnerRating(id int) error {
 		return tx.Error
 	}
 
+	var rating model.OwnerRating
+	result := tx.Where("id = ?", id).First(&rating)
+	if result.Error != nil {
+		tx.Rollback()
+		logrus.Errorf("get owner rating failed before delete, err: %v", result.Error)
+		return result.Error
+	}
+
 	// 1. 先删除关联的宠物评分
-	result := tx.Where("owner_rating_id = ?", id).Delete(&model.PetRating{})
+	result = tx.Where("owner_rating_id = ?", id).Delete(&model.PetRating{})
 	if result.Error != nil {
 		tx.Rollback()
 		logrus.Errorf("delete associated pet ratings failed, err: %v", result.Error)
@@ -153,6 +161,12 @@ func DeleteOwnerRating(id int) error {
 	if result.RowsAffected == 0 {
 		tx.Rollback()
 		return nil // 可选择返回 ErrRecordNotFound
+	}
+
+	if err := tx.Model(&model.Order{}).Where("id = ?", rating.OrderID).Update("user_rating_state", 0).Error; err != nil {
+		tx.Rollback()
+		logrus.Errorf("reset owner rating state failed, err: %v", err)
+		return err
 	}
 
 	if err := tx.Commit().Error; err != nil {

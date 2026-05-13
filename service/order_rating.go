@@ -25,11 +25,24 @@ func GetSitterRatingsPage(c *gin.Context) {
 		return
 	}
 
+	userID, err := auth.GetUserID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sitterID, err := auth.GetSitterID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	params := model.SitterRatingQueryParams{
 		ID:       helper.S2I64(c.Query("ID")),
 		OrderID:  helper.S2I64(c.Query("OrderID")),
-		UserID:   c.Query("UserID"),
-		SitterID: c.Query("SitterID"),
+		UserID:   userID,
+		SitterID: sitterID,
 	}
 
 	// 查询数据
@@ -67,15 +80,18 @@ func CreateSitterRating(c *gin.Context) {
 		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	//if order.OwnerID != userId {
-	//	logrus.Errorf(" No permission for this order %v", err)
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+	if order.OwnerID != userId {
+		logrus.Errorf("no permission for this order")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission for this order")
+		return
+	}
 	// 查询评价是否存在
 	sitterRating, _ := dal.GetSitterRatingByOrderId(rating.OrderID)
 	if sitterRating != nil {
 		rating.ID = sitterRating.ID
+		rating.OrderID = sitterRating.OrderID
+		rating.UserID = userId
+		rating.SitterID = order.SitterID
 		err := dal.UpdateSitterRating(rating)
 		if err != nil {
 			logrus.Errorf("UpdateSitterRating failed, err: %v", err)
@@ -110,8 +126,36 @@ func UpdateSitterRating(c *gin.Context) {
 		return
 	}
 
+	if rating.ID <= 0 {
+		open_api.OpenApiErrorResponse(c, http.StatusBadRequest, "ID is required")
+		return
+	}
+
+	existingRating, err := dal.GetSitterRatingById(int(rating.ID))
+	if err != nil {
+		logrus.Errorf("GetSitterRatingById failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	order, err := dal.GetOrderById(existingRating.OrderID)
+	if err != nil {
+		logrus.Errorf("GetOrderById failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := ensureOrderOwner(c, order); err != nil {
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, err.Error())
+		return
+	}
+
+	rating.OrderID = existingRating.OrderID
+	rating.UserID = order.OwnerID
+	rating.SitterID = order.SitterID
+
 	// 更新评价
-	err := dal.UpdateSitterRating(rating)
+	err = dal.UpdateSitterRating(rating)
 	if err != nil {
 		logrus.Errorf("UpdateSitterRating failed, err: %v", err)
 		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
@@ -129,6 +173,25 @@ func DeleteSitterRating(c *gin.Context) {
 		logrus.Errorf("invalid id parameter, id = %v", idStr)
 		err = errors.New("invalid id parameter")
 		open_api.OpenApiErrorResponse(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	rating, err := dal.GetSitterRatingById(id)
+	if err != nil {
+		logrus.Errorf("GetSitterRatingById failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	order, err := dal.GetOrderById(rating.OrderID)
+	if err != nil {
+		logrus.Errorf("GetOrderById failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := ensureOrderOwner(c, order); err != nil {
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, err.Error())
 		return
 	}
 
@@ -162,6 +225,17 @@ func GetSitterRatingById(c *gin.Context) {
 		return
 	}
 
+	order, err := dal.GetOrderById(rating.OrderID)
+	if err != nil {
+		logrus.Errorf("GetOrderById failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := ensureOrderParticipant(c, order); err != nil {
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, err.Error())
+		return
+	}
+
 	open_api.OpenApiSuccessResponse(c, rating)
 }
 
@@ -169,6 +243,17 @@ func GetSitterRatingById(c *gin.Context) {
 func GetSitterRatingByOrderId(c *gin.Context) {
 	orderIdStr := c.Query("OrderID")
 	orderId := helper.S2I64(orderIdStr)
+
+	order, err := dal.GetOrderById(orderId)
+	if err != nil {
+		logrus.Errorf("GetOrderById failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := ensureOrderParticipant(c, order); err != nil {
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, err.Error())
+		return
+	}
 
 	// 查询评价
 	rating, err := dal.GetSitterRatingByOrderId(orderId)
@@ -196,23 +281,17 @@ func CreateOwnerRating(c *gin.Context) {
 		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// 订单是否是该用户的
-	//sitterID, err := auth.GetSitterID(c)
-	//if err != nil {
-	//	logrus.Errorf("auth failed, err: %v", err)
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
-	//if order.SitterID != sitterID {
-	//	logrus.Errorf("No permission for this order")
-	//	err := errors.New("no permission for this order")
-	//	open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
-	//	return
-	//}
+	if err := ensureOrderSitter(c, order); err != nil {
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, err.Error())
+		return
+	}
 	// 查询评价是否存在
 	ownerRating, _ := dal.GetOwnerRatingByOrderId(rating.OrderID)
 	if ownerRating != nil {
 		rating.ID = ownerRating.ID
+		rating.OrderID = ownerRating.OrderID
+		rating.OwnerID = order.OwnerID
+		rating.SitterID = order.SitterID
 		err := dal.UpdateOwnerRating(rating)
 		if err != nil {
 			logrus.Errorf("UpdateOwnerRating failed, err: %v", err)
@@ -243,6 +322,24 @@ func GetUserAverageRatings(c *gin.Context) {
 		return
 	}
 
+	currentUserID, err := auth.GetUserID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	currentSitterID, err := auth.GetSitterID(c)
+	if err != nil {
+		logrus.Errorf("auth failed, err: %v", err)
+		open_api.OpenApiErrorResponse(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if userId != currentUserID && userId != currentSitterID {
+		logrus.Errorf("no permission to view average rating")
+		open_api.OpenApiErrorResponse(c, http.StatusForbidden, "no permission to view average rating")
+		return
+	}
+
 	// 1. 获取作为 Sitter 的平均分
 	sitterAvg, err := dal.GetAverageSitterRating(userId)
 	if err != nil {
@@ -264,6 +361,52 @@ func GetUserAverageRatings(c *gin.Context) {
 		"SitterAverageScore": sitterAvg,
 		"OwnerAverageScore":  ownerAvg,
 	})
+}
+
+func ensureOrderOwner(c *gin.Context, order *model.Order) error {
+	userID, err := auth.GetUserID(c)
+	if err != nil {
+		return err
+	}
+	if order == nil || order.OwnerID != userID {
+		return errors.New("no permission for this order")
+	}
+	return nil
+}
+
+func ensureOrderSitter(c *gin.Context, order *model.Order) error {
+	sitterID, err := auth.GetSitterID(c)
+	if err != nil {
+		return err
+	}
+	if order == nil || order.SitterID != sitterID {
+		return errors.New("no permission for this order")
+	}
+	return nil
+}
+
+func ensureOrderParticipant(c *gin.Context, order *model.Order) error {
+	if order == nil {
+		return errors.New("order not found")
+	}
+
+	userID, err := auth.GetUserID(c)
+	if err != nil {
+		return err
+	}
+	if order.OwnerID == userID {
+		return nil
+	}
+
+	sitterID, err := auth.GetSitterID(c)
+	if err != nil {
+		return err
+	}
+	if order.SitterID == sitterID {
+		return nil
+	}
+
+	return errors.New("no permission for this order")
 }
 
 // paramCheck 参数校验.
